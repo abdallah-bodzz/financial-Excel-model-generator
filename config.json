@@ -1,0 +1,26 @@
+{
+  "forecast_years": 5,
+  "base_revenue": 1000000,
+  "initial_cash": 150000,
+  "initial_ppe": 500000,
+  "initial_debt": 200000,
+  "scenarios": {
+    "Base": { "revenue_growth": 0.10, "cogs_pct": 0.45 },
+    "Best": { "revenue_growth": 0.18, "cogs_pct": 0.40 },
+    "Worst": { "revenue_growth": 0.04, "cogs_pct": 0.55 }
+  },
+  "assumptions": {
+    "rd_pct": 0.12,
+    "sga_pct": 0.15,
+    "tax_rate": 0.21,
+    "depreciation_rate": 0.10,
+    "capex_pct": 0.05,
+    "dso_days": 45,
+    "dio_days": 60,
+    "dpo_days": 30,
+    "interest_rate": 0.05,
+    "principal_repayment": 0,
+    "wacc": 0.09,
+    "perpetual_growth": 0.025
+  }
+}
