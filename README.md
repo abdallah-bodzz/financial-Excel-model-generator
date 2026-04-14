@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Python script (`generate_model_v4.py`) that produces a fully Excel-driven, 3-statement financial model as an `.xlsx` file. Python only builds structure, formulas, and styling. Excel does every calculation. No numbers are computed in Python — they all live as Excel formulas that recalculate when assumptions change.
+A Python script (`generate_model.py`) that produces a fully Excel-driven, 3-statement financial model as an `.xlsx` file. Python only builds structure, formulas, and styling. Excel does every calculation. No numbers are computed in Python — they all live as Excel formulas that recalculate when assumptions change.
 
 ---
 
