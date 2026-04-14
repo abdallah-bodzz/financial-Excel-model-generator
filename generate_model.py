@@ -1,15 +1,18 @@
 """
-Financial Model Generator – Final
-Fixed in this version:
-  - CRITICAL: Cash formula off-by-one (was Y(N-1) cash flow, now YN) → balance sheet now balances
-  - Sources & Uses formula: added missing $ anchors
-  - Break-even year KPI: fixed and confirmed present
-  - Dead code removed (units_note)
-  - Dashboard helper row hidden
-  - apply_money helper cleaned up
-  - Insights commentary escaping fixed
-  - Row heights set on all sheets for clean visual spacing
-  - All-around UX polish pass
+Financial Model Generator
+
+Generates a dynamic 3‑statement financial model (P&L, Balance Sheet, Cash Flow,
+DCF valuation, scenario engine, sensitivity matrix) as an Excel file.
+
+All calculations are stored as Excel formulas. Changing any input in the
+Control Panel updates every dependent cell automatically. No hardcoded numbers
+are written to formula cells.
+
+Usage:
+    python generate_model.py
+
+The script reads configuration from config.json in the same directory and writes
+Financial_Model.xlsx to the ./output/ subdirectory.
 """
 
 import json
@@ -22,13 +25,16 @@ from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.series import SeriesLabel
 
-# ─────────────────────────────────────────────
-# 1. Config
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# Configuration loading
+# ------------------------------------------------------------------------------
+
 cfg_path = Path(__file__).parent / "config.json"
 with open(cfg_path) as f:
     cfg = json.load(f)
 
+# Required top-level keys
 for key in ["forecast_years", "base_revenue", "initial_cash", "initial_ppe", "initial_debt"]:
     if key not in cfg:
         raise ValueError(f"Missing required config key: {key}")
@@ -41,6 +47,7 @@ INITIAL_CASH = cfg["initial_cash"]
 INITIAL_PPE  = cfg["initial_ppe"]
 INITIAL_DEBT = cfg["initial_debt"]
 
+# Unpack assumptions for readability (values used directly in formulas via cell references)
 RD_PCT          = ASSUMPTIONS["rd_pct"]
 SGA_PCT         = ASSUMPTIONS["sga_pct"]
 TAX_RATE        = ASSUMPTIONS["tax_rate"]
@@ -54,88 +61,116 @@ PRINCIPAL_REPAY = ASSUMPTIONS["principal_repayment"]
 WACC_VAL        = ASSUMPTIONS["wacc"]
 PERP_GROWTH     = ASSUMPTIONS["perpetual_growth"]
 
-# ─────────────────────────────────────────────
-# 2. Workbook & style helpers
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# Workbook and style helpers
+# ------------------------------------------------------------------------------
+
 wb = Workbook()
 
-def CL(col): return get_column_letter(col)
+def col_letter(col: int) -> str:
+    """Return Excel column letter for a given column number (1‑based)."""
+    return get_column_letter(col)
 
+# Colour constants
 DARK_BLUE  = "1F4E79"
 MID_BLUE   = "2E75B6"
 YELLOW     = "FFFF00"
 WHITE      = "FFFFFF"
 
+# Border styles
 _thin = Side(style="thin")
 _med  = Side(style="medium")
 border_box    = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 border_bottom = Border(bottom=_med)
 border_top    = Border(top=_med)
 
+
 def _font(bold=False, color="000000", size=10, italic=False):
     return Font(bold=bold, color=color, size=size, name="Arial", italic=italic)
+
 
 def _fill(hex_color):
     return PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
 
+
 def apply_header(cell):
-    cell.font      = _font(bold=True, color=WHITE)
-    cell.fill      = _fill(DARK_BLUE)
+    """Format a column header (dark blue background, white bold text)."""
+    cell.font = _font(bold=True, color=WHITE)
+    cell.fill = _fill(DARK_BLUE)
     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    cell.border    = border_box
+    cell.border = border_box
+
 
 def apply_subheader(cell):
-    cell.font      = _font(bold=True, color=WHITE)
-    cell.fill      = _fill(MID_BLUE)
+    """Format a sub‑header (medium blue background, white bold text)."""
+    cell.font = _font(bold=True, color=WHITE)
+    cell.fill = _fill(MID_BLUE)
     cell.alignment = Alignment(horizontal="left", vertical="center")
-    cell.border    = border_box
+    cell.border = border_box
+
 
 def apply_input(cell):
-    """Blue text on yellow — hardcoded input (industry standard)."""
-    cell.font       = _font(color="0000FF")
-    cell.fill       = _fill(YELLOW)
+    """Format an input cell (yellow background, blue text, unlocked)."""
+    cell.font = _font(color="0000FF")
+    cell.fill = _fill(YELLOW)
     cell.protection = Protection(locked=False)
 
+
 def apply_formula(cell):
-    """Black text — calculated cell."""
+    """Format a formula cell (default black text)."""
     cell.font = _font()
 
+
 def apply_link(cell):
-    """Green text — cross-sheet link."""
+    """Format a cross‑sheet link (green text)."""
     cell.font = _font(color="008000")
 
+
 def apply_flag(cell):
-    """Red italic — warning flag."""
+    """Format a warning flag (red italic text)."""
     cell.font = _font(color="9C0006", italic=True, size=9)
 
+
 def apply_money(cell, is_input=False):
+    """Apply currency number format and appropriate input/formula styling."""
     cell.number_format = '#,##0_);(#,##0);"-"'
     apply_input(cell) if is_input else apply_formula(cell)
 
+
 def apply_percent(cell, is_input=False):
+    """Apply percentage number format and appropriate styling."""
     cell.number_format = "0.0%"
     apply_input(cell) if is_input else apply_formula(cell)
 
+
 def apply_label(cell, bold=False, indent=1, color="000000"):
-    cell.font      = _font(bold=bold, color=color)
+    """Style a row label cell."""
+    cell.font = _font(bold=bold, color=color)
     cell.alignment = Alignment(horizontal="left", vertical="center", indent=indent)
 
-def ref(sheet, row, col):
-    """Absolute cross-sheet reference: 'Sheet'!$C$5"""
-    return f"'{sheet}'!${CL(col)}${row}"
+
+def ref(sheet: str, row: int, col: int) -> str:
+    """Return an absolute cross‑sheet reference: 'Sheet'!$C$5"""
+    return f"'{sheet}'!${col_letter(col)}${row}"
+
 
 def set_col_widths(ws, label_col_width=30, data_col_width=14, n_data_cols=None):
+    """Set column widths: first column for labels, remaining for data years."""
     ws.column_dimensions["A"].width = label_col_width
     end = (n_data_cols or YEARS) + 1
     for c in range(2, end + 1):
-        ws.column_dimensions[CL(c)].width = data_col_width
+        ws.column_dimensions[col_letter(c)].width = data_col_width
+
 
 def set_row_height(ws, row, height):
     ws.row_dimensions[row].height = height
 
-# ─────────────────────────────────────────────
-# 3. Row maps
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# Row maps for P&L, Balance Sheet, Cash Flow
+# ------------------------------------------------------------------------------
+
 pl_rows = {
     "Revenue":      2,
     "COGS":         3,
@@ -157,7 +192,6 @@ bs_rows = {
     "Inventory":                 4,
     "PP&E":                      5,
     "Total Assets":              6,
-    # row 7: separator
     "Accounts Payable":          8,
     "Debt":                      9,
     "Equity Plug":               10,
@@ -180,22 +214,25 @@ cf_rows = {
     "Net Change in Cash":   12,
 }
 
+# Short names for frequent use
 BS = "Balance Sheet"
 CF = "Cash Flow"
 CP = "Control Panel"
 
-# ─────────────────────────────────────────────
-# 4. Control Panel
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 1. Control Panel sheet
+# ------------------------------------------------------------------------------
+
 cp = wb.create_sheet(CP)
 
 CP_ASSUMP_START = 3
 
-# Assumption order — wacc must come BEFORE perpetual_growth so the flag formula works
+# List of (config_key, label, default_value, format_type)
 assumption_order = [
     ("rd_pct",              "R&D % of Revenue",          RD_PCT,          "percent"),
     ("sga_pct",             "SG&A % of Revenue",         SGA_PCT,         "percent"),
-    ("tax_rate",            "Tax Rate",                   TAX_RATE,        "percent"),
+    ("tax_rate",            "Tax Rate",                  TAX_RATE,        "percent"),
     ("depreciation_rate",   "Depreciation Rate (PP&E)",  DEPR_RATE,       "percent"),
     ("capex_pct",           "Capex % of Revenue",        CAPEX_PCT,       "percent"),
     ("dso_days",            "DSO (days)",                DSO,             "number"),
@@ -206,6 +243,7 @@ assumption_order = [
     ("wacc",                "WACC",                      WACC_VAL,        "percent"),
     ("perpetual_growth",    "Perpetual Growth Rate",     PERP_GROWTH,     "percent"),
 ]
+
 CP_ASSUMP_ROW = {}
 
 # Title
@@ -223,11 +261,15 @@ for c, h in enumerate(["Assumption", "Value", "Flag"], start=1):
 for i, (key, label, val, fmt) in enumerate(assumption_order):
     row = CP_ASSUMP_START + i
     CP_ASSUMP_ROW[key] = row
-    cp.cell(row=row, column=1, value=label); apply_label(cp.cell(row=row, column=1))
+    cp.cell(row=row, column=1, value=label)
+    apply_label(cp.cell(row=row, column=1))
     cell_b = cp.cell(row=row, column=2, value=val)
-    apply_percent(cell_b, is_input=True) if fmt == "percent" else apply_money(cell_b, is_input=True)
+    if fmt == "percent":
+        apply_percent(cell_b, is_input=True)
+    else:
+        apply_money(cell_b, is_input=True)
 
-# Assumption flags (column C)
+# Warning flags for assumptions (Column C)
 FLAG_DEF = {
     "rd_pct":            (">0.20",  "⚠ R&D > 20% is very high"),
     "sga_pct":           (">0.30",  "⚠ SG&A > 30% — watch opex"),
@@ -244,14 +286,16 @@ for key, (cond, msg) in FLAG_DEF.items():
     cp.cell(row=row, column=3, value=f'=IF($B${row}{cond},"{msg}","")')
     apply_flag(cp.cell(row=row, column=3))
 
-# perpetual_growth flag: g >= WACC makes TV infinite
+# Perpetual growth flag (g >= WACC makes terminal value invalid)
 pg_row   = CP_ASSUMP_ROW["perpetual_growth"]
 wacc_row = CP_ASSUMP_ROW["wacc"]
 cp.cell(row=pg_row, column=3,
         value=f'=IF($B${pg_row}>=$B${wacc_row},"⚠ g ≥ WACC → Terminal Value invalid","")')
 apply_flag(cp.cell(row=pg_row, column=3))
 
-# ── Scenario table ──
+# ------------------------------------------------------------------------------
+# Scenario table
+# ------------------------------------------------------------------------------
 SCEN_HDR_ROW    = CP_ASSUMP_START + len(assumption_order) + 2
 SCEN_DATA_START = SCEN_HDR_ROW + 1
 scen_names      = list(SCENARIOS.keys())
@@ -264,21 +308,20 @@ for i, (sname, sdata) in enumerate(SCENARIOS.items()):
     cp.cell(row=r, column=1, value=sname);                    apply_label(cp.cell(row=r, column=1))
     cp.cell(row=r, column=2, value=sdata["revenue_growth"]);  apply_percent(cp.cell(row=r, column=2), is_input=True)
     cp.cell(row=r, column=3, value=sdata["cogs_pct"]);        apply_percent(cp.cell(row=r, column=3), is_input=True)
-    # Active indicator
     cp.cell(row=r, column=4, value=f'=IF($B${SCEN_DATA_START+len(SCENARIOS)+2}=$A${r},"◀ active","")')
     apply_flag(cp.cell(row=r, column=4))
     cp.cell(row=r, column=4).font = _font(color="008000", italic=True, size=9)
     for c in range(1, 4):
         cp.cell(row=r, column=c).protection = Protection(locked=False)
 
-# ── Scenario selector ──
+# Scenario selector dropdown
 SEL_ROW = SCEN_DATA_START + len(SCENARIOS) + 2
 cp.cell(row=SEL_ROW, column=1, value="▶  Active Scenario")
 apply_subheader(cp.cell(row=SEL_ROW, column=1))
 cp.cell(row=SEL_ROW, column=2, value="Base")
 apply_input(cp.cell(row=SEL_ROW, column=2))
 
-# Range-based dropdown (scalable: adding scenario rows auto-extends it)
+# Data validation range – automatically extends when scenarios are added
 dv = DataValidation(
     type="list",
     formula1=f"=$A${SCEN_DATA_START}:$A${SCEN_DATA_START + len(SCENARIOS) - 1}",
@@ -288,7 +331,7 @@ cp.add_data_validation(dv)
 dv.add(f"B{SEL_ROW}")
 CP_SEL_ADDR = f"$B${SEL_ROW}"
 
-# Effective growth & COGS
+# Effective growth & COGS (derived from selected scenario)
 EFF_GROWTH_ROW = SEL_ROW + 1
 EFF_COGS_ROW   = SEL_ROW + 2
 sr_names  = f"$A${SCEN_DATA_START}:$A${SCEN_DATA_START + len(SCENARIOS) - 1}"
@@ -310,21 +353,21 @@ apply_percent(cp.cell(row=EFF_COGS_ROW, column=2))
 EFF_GROWTH_REF = f"'{CP}'!$B${EFF_GROWTH_ROW}"
 EFF_COGS_REF   = f"'{CP}'!$B${EFF_COGS_ROW}"
 
-def cp_ref(key):
+def cp_ref(key: str) -> str:
+    """Return absolute reference to an assumption value cell in Control Panel."""
     return f"'{CP}'!$B${CP_ASSUMP_ROW[key]}"
 
-# Model health (filled after BS is built, BC_RANGE defined there)
-HEALTH_ROW = EFF_COGS_ROW + 2
-
-# Column widths
+# Column widths for Control Panel
 cp.column_dimensions["A"].width = 30
 cp.column_dimensions["B"].width = 18
 cp.column_dimensions["C"].width = 36
 cp.column_dimensions["D"].width = 12
 
-# ─────────────────────────────────────────────
-# 5. P&L
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 2. Profit & Loss sheet
+# ------------------------------------------------------------------------------
+
 pl = wb.create_sheet("P&L")
 for c, h in enumerate(["Line Item (USD)"] + [f"Year {y}" for y in range(1, YEARS+1)], 1):
     apply_header(pl.cell(row=1, column=c, value=h))
@@ -349,70 +392,81 @@ for name, (label, bold, border) in pl_label_map.items():
     if border:
         cell.border = border_bottom
 
-def pl_ref(row_name, col):
+def pl_ref(row_name: str, col: int) -> str:
+    """Return absolute reference to a P&L cell."""
     return ref("P&L", pl_rows[row_name], col)
 
-# Year 1 Revenue — input
+# Year 1 Revenue – hardcoded input
 apply_money(pl.cell(row=pl_rows["Revenue"], column=2, value=BASE_REV), is_input=True)
 
-# Year 2..N Revenue
+# Revenue Years 2..N (compound growth)
 for col in range(3, YEARS+2):
     pl.cell(row=pl_rows["Revenue"], column=col,
             value=f"={pl_ref('Revenue', col-1)}*(1+{EFF_GROWTH_REF})")
     apply_money(pl.cell(row=pl_rows["Revenue"], column=col))
 
+# Populate all other P&L lines for each year
 for col in range(2, YEARS+2):
     rev = pl_ref("Revenue", col)
 
-    pl.cell(row=pl_rows["COGS"], column=col,     value=f"={rev}*{EFF_COGS_REF}")
+    # COGS = Revenue × COGS%
+    pl.cell(row=pl_rows["COGS"], column=col, value=f"={rev}*{EFF_COGS_REF}")
     apply_money(pl.cell(row=pl_rows["COGS"], column=col))
 
+    # Gross Profit
     pl.cell(row=pl_rows["Gross Profit"], column=col,
             value=f"={pl_ref('Revenue',col)}-{pl_ref('COGS',col)}")
     apply_money(pl.cell(row=pl_rows["Gross Profit"], column=col))
 
+    # R&D and SG&A
     pl.cell(row=pl_rows["R&D"],  column=col, value=f"={rev}*{cp_ref('rd_pct')}")
     apply_money(pl.cell(row=pl_rows["R&D"], column=col))
 
     pl.cell(row=pl_rows["SG&A"], column=col, value=f"={rev}*{cp_ref('sga_pct')}")
     apply_money(pl.cell(row=pl_rows["SG&A"], column=col))
 
+    # EBITDA
     pl.cell(row=pl_rows["EBITDA"], column=col,
             value=f"={pl_ref('Gross Profit',col)}-{pl_ref('R&D',col)}-{pl_ref('SG&A',col)}")
     apply_money(pl.cell(row=pl_rows["EBITDA"], column=col))
 
-    # Depreciation: opening PP&E * rate (no circular ref: uses prior-year BS)
+    # Depreciation = opening PP&E × rate (opening PP&E from prior Balance Sheet)
     opening_ppe = INITIAL_PPE if col == 2 else ref(BS, bs_rows["PP&E"], col-1)
     pl.cell(row=pl_rows["Depreciation"], column=col,
             value=f"={opening_ppe}*{cp_ref('depreciation_rate')}")
     apply_money(pl.cell(row=pl_rows["Depreciation"], column=col))
 
+    # EBIT
     pl.cell(row=pl_rows["EBIT"], column=col,
             value=f"={pl_ref('EBITDA',col)}-{pl_ref('Depreciation',col)}")
     apply_money(pl.cell(row=pl_rows["EBIT"], column=col))
 
-    # Interest: opening debt only — safe, no circular reference
+    # Interest = opening debt × rate (non‑circular)
     opening_debt = INITIAL_DEBT if col == 2 else ref(BS, bs_rows["Debt"], col-1)
     pl.cell(row=pl_rows["Interest"], column=col,
             value=f"={opening_debt}*{cp_ref('interest_rate')}")
     apply_money(pl.cell(row=pl_rows["Interest"], column=col))
 
+    # EBT
     pl.cell(row=pl_rows["EBT"], column=col,
             value=f"={pl_ref('EBIT',col)}-{pl_ref('Interest',col)}")
     apply_money(pl.cell(row=pl_rows["EBT"], column=col))
 
-    # Taxes: MAX(EBT × rate, 0) — no negative taxes on losses
+    # Taxes = MAX(EBT × rate, 0) – no negative taxes on losses
     pl.cell(row=pl_rows["Taxes"], column=col,
             value=f"=MAX({pl_ref('EBT',col)}*{cp_ref('tax_rate')},0)")
     apply_money(pl.cell(row=pl_rows["Taxes"], column=col))
 
+    # Net Income
     pl.cell(row=pl_rows["Net Income"], column=col,
             value=f"={pl_ref('EBT',col)}-{pl_ref('Taxes',col)}")
     apply_money(pl.cell(row=pl_rows["Net Income"], column=col))
 
-# ─────────────────────────────────────────────
-# 6. Balance Sheet
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 3. Balance Sheet sheet
+# ------------------------------------------------------------------------------
+
 bs_ws = wb.create_sheet("Balance Sheet")
 for c, h in enumerate(["Line Item (USD)"] + [f"Year {y}" for y in range(1, YEARS+1)], 1):
     apply_header(bs_ws.cell(row=1, column=c, value=h))
@@ -435,20 +489,20 @@ for name, (label, bold) in bs_label_map.items():
     if bold:
         cell.border = border_bottom
 
+# Section header for Liabilities & Equity
 bs_ws.cell(row=7, column=1, value="LIABILITIES & EQUITY")
 apply_label(bs_ws.cell(row=7, column=1), bold=True, color="595959")
 bs_ws.cell(row=7, column=1).font = _font(bold=True, color="595959", size=9)
 
-# ── Cash  FIX: Cash YN = Cash Y(N-1) + NChg YN (SAME column) ──
+# Cash: Y1 = initial; Yn = Y(n-1) + Net Change in Cash (same column from CF)
 apply_money(bs_ws.cell(row=bs_rows["Cash"], column=2, value=INITIAL_CASH), is_input=True)
 for col in range(3, YEARS+2):
     prev = ref(BS, bs_rows["Cash"], col-1)
-    # FIXED: uses CF col (current year), not col-1 (prior year)
     nchg = ref(CF, cf_rows["Net Change in Cash"], col)
     bs_ws.cell(row=bs_rows["Cash"], column=col, value=f"={prev}+{nchg}")
     apply_money(bs_ws.cell(row=bs_rows["Cash"], column=col))
 
-# AR: average-period revenue × DSO/365
+# Accounts Receivable = average‑period revenue × DSO / 365
 for col in range(2, YEARS+2):
     rev_c = pl_ref("Revenue", col)
     rev_p = pl_ref("Revenue", col-1) if col > 2 else pl_ref("Revenue", col)
@@ -456,7 +510,7 @@ for col in range(2, YEARS+2):
                value=f"=(({rev_c}+{rev_p})/2)*{cp_ref('dso_days')}/365")
     apply_money(bs_ws.cell(row=bs_rows["Accounts Receivable"], column=col))
 
-# Inventory: average-period COGS × DIO/365
+# Inventory = average‑period COGS × DIO / 365
 for col in range(2, YEARS+2):
     cogs_c = pl_ref("COGS", col)
     cogs_p = pl_ref("COGS", col-1) if col > 2 else pl_ref("COGS", col)
@@ -464,7 +518,7 @@ for col in range(2, YEARS+2):
                value=f"=(({cogs_c}+{cogs_p})/2)*{cp_ref('dio_days')}/365")
     apply_money(bs_ws.cell(row=bs_rows["Inventory"], column=col))
 
-# PP&E: Y1=initial, YN = prev - CF_Capex(neg) - Depr
+# PP&E: Y1 = initial; Yn = Y(n-1) − Capex − Depreciation
 apply_money(bs_ws.cell(row=bs_rows["PP&E"], column=2, value=INITIAL_PPE), is_input=True)
 for col in range(3, YEARS+2):
     prev_ppe = ref(BS, bs_rows["PP&E"], col-1)
@@ -474,14 +528,14 @@ for col in range(3, YEARS+2):
                value=f"={prev_ppe}-({cf_capex})-{depr}")
     apply_money(bs_ws.cell(row=bs_rows["PP&E"], column=col))
 
-# Total Assets
+# Total Assets = sum of all asset line items
 for col in range(2, YEARS+2):
     parts = "+".join(ref(BS, bs_rows[k], col)
                      for k in ("Cash", "Accounts Receivable", "Inventory", "PP&E"))
     bs_ws.cell(row=bs_rows["Total Assets"], column=col, value=f"={parts}")
     apply_money(bs_ws.cell(row=bs_rows["Total Assets"], column=col))
 
-# AP: average-period COGS × DPO/365
+# Accounts Payable = average‑period COGS × DPO / 365
 for col in range(2, YEARS+2):
     cogs_c = pl_ref("COGS", col)
     cogs_p = pl_ref("COGS", col-1) if col > 2 else pl_ref("COGS", col)
@@ -489,7 +543,7 @@ for col in range(2, YEARS+2):
                value=f"=(({cogs_c}+{cogs_p})/2)*{cp_ref('dpo_days')}/365")
     apply_money(bs_ws.cell(row=bs_rows["Accounts Payable"], column=col))
 
-# Debt: MAX(0, prev − repayment) — prevents negative debt
+# Debt: Y1 = initial; Yn = MAX(0, Y(n-1) − principal repayment)
 apply_money(bs_ws.cell(row=bs_rows["Debt"], column=2, value=INITIAL_DEBT), is_input=True)
 for col in range(3, YEARS+2):
     prev_debt = ref(BS, bs_rows["Debt"], col-1)
@@ -497,8 +551,7 @@ for col in range(3, YEARS+2):
                value=f"=MAX(0,{prev_debt}-{cp_ref('principal_repayment')})")
     apply_money(bs_ws.cell(row=bs_rows["Debt"], column=col))
 
-# Retained Earnings: Y1 = NI Y1, YN = prev + NI YN
-# (Y1 must capture Year 1 earnings so the plug is calibrated correctly)
+# Retained Earnings: Y1 = Net Income Y1; Yn = Y(n-1) + Net Income Yn
 for col in range(2, YEARS+2):
     if col == 2:
         bs_ws.cell(row=bs_rows["Retained Earnings"], column=col,
@@ -510,8 +563,8 @@ for col in range(2, YEARS+2):
                    value=f"={prev_re}+{ni_curr}")
     apply_money(bs_ws.cell(row=bs_rows["Retained Earnings"], column=col))
 
-# Equity Plug: Year 1 = TA − AP − Debt − RE (absorbs opening capital)
-#              Year 2+ = constant (paid-in capital doesn't change)
+# Equity Plug: Year 1 = Total Assets − AP − Debt − RE (absorbs opening capital)
+#              Year 2+ = constant (paid‑in capital does not change)
 col = 2
 ta  = ref(BS, bs_rows["Total Assets"], col)
 ap  = ref(BS, bs_rows["Accounts Payable"], col)
@@ -524,17 +577,17 @@ for col in range(3, YEARS+2):
     bs_ws.cell(row=bs_rows["Equity Plug"], column=col, value=f"={plug_y1}")
     apply_money(bs_ws.cell(row=bs_rows["Equity Plug"], column=col))
 
-# Total L&E
+# Total Liabilities & Equity
 for col in range(2, YEARS+2):
     parts = "+".join(ref(BS, bs_rows[k], col)
                      for k in ("Accounts Payable", "Debt", "Equity Plug", "Retained Earnings"))
     bs_ws.cell(row=bs_rows["Total Liabilities & Equity"], column=col, value=f"={parts}")
     apply_money(bs_ws.cell(row=bs_rows["Total Liabilities & Equity"], column=col))
 
-# Balance Check row
+# Balance Check row (must be zero for a balanced sheet)
 bc_label = bs_ws.cell(row=BS_CHECK_ROW, column=1, value="Balance Check  (must = 0)")
 bc_label.font = _font(bold=True, size=9, italic=True)
-BC_RANGE = f"$B${BS_CHECK_ROW}:${CL(YEARS+1)}${BS_CHECK_ROW}"
+BC_RANGE = f"$B${BS_CHECK_ROW}:${col_letter(YEARS+1)}${BS_CHECK_ROW}"
 
 red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 red_font = _font(bold=True, color="9C0006")
@@ -546,15 +599,17 @@ for col in range(2, YEARS+2):
     le = ref(BS, bs_rows["Total Liabilities & Equity"], col)
     cell = bs_ws.cell(row=BS_CHECK_ROW, column=col, value=f"={ta}-{le}")
     apply_money(cell)
-    addr = f"{CL(col)}{BS_CHECK_ROW}"
+    addr = f"{col_letter(col)}{BS_CHECK_ROW}"
     bs_ws.conditional_formatting.add(addr,
         CellIsRule(operator="notEqual", formula=["0"], fill=red_fill, font=red_font))
     bs_ws.conditional_formatting.add(addr,
         CellIsRule(operator="equal",    formula=["0"], fill=grn_fill, font=grn_font))
 
-# ─────────────────────────────────────────────
-# 7. Cash Flow
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 4. Cash Flow sheet
+# ------------------------------------------------------------------------------
+
 cf_ws = wb.create_sheet("Cash Flow")
 for c, h in enumerate(["Line Item (USD)"] + [f"Year {y}" for y in range(1, YEARS+1)], 1):
     apply_header(cf_ws.cell(row=1, column=c, value=h))
@@ -579,15 +634,17 @@ for name, (label, bold) in cf_label_map.items():
         cell.border = border_bottom
 
 for col in range(2, YEARS+2):
-    # Net Income — green link from P&L
+    # Net Income (link from P&L)
     cell = cf_ws.cell(row=cf_rows["Net Income"], column=col,
                       value=f"={pl_ref('Net Income', col)}")
-    cell.number_format = '#,##0_);(#,##0);"-"'; apply_link(cell)
+    cell.number_format = '#,##0_);(#,##0);"-"'
+    apply_link(cell)
 
-    # Depreciation — green link from P&L
+    # Depreciation (link from P&L)
     cell = cf_ws.cell(row=cf_rows["Depreciation"], column=col,
                       value=f"={pl_ref('Depreciation', col)}")
-    cell.number_format = '#,##0_);(#,##0);"-"'; apply_link(cell)
+    cell.number_format = '#,##0_);(#,##0);"-"'
+    apply_link(cell)
 
     # Change in AR = −(AR_curr − AR_prev)
     ar_c = ref(BS, bs_rows["Accounts Receivable"], col)
@@ -607,7 +664,7 @@ for col in range(2, YEARS+2):
     cf_ws.cell(row=cf_rows["Change in AP"], column=col, value=f"={ap_c}-{ap_p}")
     apply_money(cf_ws.cell(row=cf_rows["Change in AP"], column=col))
 
-    # Cash from Operations
+    # Cash from Operations = NI + Depr + ΔAR + ΔInv + ΔAP
     ni   = ref(CF, cf_rows["Net Income"], col)
     dep  = ref(CF, cf_rows["Depreciation"], col)
     dar  = ref(CF, cf_rows["Change in AR"], col)
@@ -617,7 +674,7 @@ for col in range(2, YEARS+2):
                value=f"={ni}+{dep}+{dar}+{dinv}+{dap}")
     apply_money(cf_ws.cell(row=cf_rows["Cash from Operations"], column=col))
 
-    # Capex = −(Revenue × capex_pct) → stored as negative
+    # Capex = −(Revenue × capex%) – stored as negative
     cf_ws.cell(row=cf_rows["Capex"], column=col,
                value=f"=-({pl_ref('Revenue', col)}*{cp_ref('capex_pct')})")
     apply_money(cf_ws.cell(row=cf_rows["Capex"], column=col))
@@ -645,12 +702,14 @@ for col in range(2, YEARS+2):
     cf_ws.cell(row=cf_rows["Net Change in Cash"], column=col, value=f"={ops}+{inv}+{fin}")
     apply_money(cf_ws.cell(row=cf_rows["Net Change in Cash"], column=col))
 
-# ─────────────────────────────────────────────
-# 8. Valuation
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 5. Valuation sheet (DCF)
+# ------------------------------------------------------------------------------
+
 val = wb.create_sheet("Valuation")
 apply_header(val.cell(row=1, column=1, value="DCF VALUATION (USD)"))
-val.merge_cells(f"A1:{CL(YEARS+1)}1")
+val.merge_cells(f"A1:{col_letter(YEARS+1)}1")
 
 val["A3"] = "WACC";              val["B3"] = f"={cp_ref('wacc')}";             apply_percent(val["B3"]); apply_label(val["A3"], bold=True)
 val["A4"] = "Perpetual Growth"; val["B4"] = f"={cp_ref('perpetual_growth')}"; apply_percent(val["B4"]); apply_label(val["A4"], bold=True)
@@ -658,7 +717,7 @@ WACC_REF = "'Valuation'!$B$3"
 PERP_REF = "'Valuation'!$B$4"
 
 apply_subheader(val.cell(row=6, column=1, value="Free Cash Flow to Firm (FCFF)"))
-val.merge_cells(f"A6:{CL(YEARS+1)}6")
+val.merge_cells(f"A6:{col_letter(YEARS+1)}6")
 for c, y in enumerate(range(1, YEARS+1), start=2):
     apply_header(val.cell(row=7, column=c, value=f"Year {y}"))
 
@@ -674,13 +733,13 @@ for col in range(2, YEARS+2):
              value=f"={ebit}*(1-{tax})+{depr}+{dar}+{dinv}+{dap}+{capex}")
     apply_money(val.cell(row=8, column=col))
 
-last_fcff = f"'Valuation'!${CL(YEARS+1)}$8"
+last_fcff = f"'Valuation'!${col_letter(YEARS+1)}$8"
 val["A10"] = "Terminal Value";  apply_label(val["A10"], bold=True)
 val["B10"] = f"=IFERROR(({last_fcff}*(1+{PERP_REF}))/({WACC_REF}-{PERP_REF}),\"⚠ WACC ≤ g\")"
 apply_money(val["B10"])
 
 val["A11"] = "Enterprise Value"; apply_label(val["A11"], bold=True)
-val["B11"] = (f"=IFERROR(NPV({WACC_REF},'Valuation'!${CL(2)}$8:${CL(YEARS+1)}$8)"
+val["B11"] = (f"=IFERROR(NPV({WACC_REF},'Valuation'!${col_letter(2)}$8:${col_letter(YEARS+1)}$8)"
               f"+(B10/(1+{WACC_REF})^{YEARS}),0)")
 apply_money(val["B11"])
 val["B11"].font = _font(bold=True)
@@ -695,7 +754,7 @@ val["B13"] = "=B11-B12";         apply_money(val["B13"])
 val["B13"].font = _font(bold=True, size=12)
 val["B13"].border = border_top
 
-# Implied multiples (small but high-value addition)
+# Implied multiples
 final_rev_val = pl_ref("Revenue", final_col)
 final_ebitda_val = pl_ref("EBITDA", final_col)
 val["A15"] = "Implied EV/Revenue (Yr 5)"; apply_label(val["A15"])
@@ -703,9 +762,11 @@ val["B15"] = f"=IFERROR(B11/{final_rev_val},0)"; val["B15"].number_format = "0.0
 val["A16"] = "Implied EV/EBITDA (Yr 5)";  apply_label(val["A16"])
 val["B16"] = f"=IFERROR(B11/{final_ebitda_val},0)"; val["B16"].number_format = "0.0x"; apply_formula(val["B16"])
 
-# ─────────────────────────────────────────────
-# 9. Sensitivity (Excel Data Table)
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 6. Sensitivity sheet (Data Table shell)
+# ------------------------------------------------------------------------------
+
 sens = wb.create_sheet("Sensitivity")
 
 growth_rates = [0.02, 0.05, 0.08, 0.11, 0.14, 0.17, 0.20]
@@ -713,46 +774,48 @@ cogs_rates   = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]
 n_g = len(growth_rates)
 n_c = len(cogs_rates)
 
-# Title + instructions merged
+# Title
 apply_header(sens.cell(row=1, column=1,
     value=f"Net Income Sensitivity – Year {YEARS}"))
-sens.merge_cells(f"A1:{CL(n_c+1)}1")
+sens.merge_cells(f"A1:{col_letter(n_c+1)}1")
 
-# Instructions row (row 2, spanning full width) — highlighted so users don't miss it
+# Instructions (orange banner)
 inst_cell = sens.cell(row=2, column=1,
-    value=f"▶  Select B3:{CL(n_c+1)}{n_g+3}  →  Data  →  What-If Analysis  →  Data Table"
+    value=f"▶  Select B3:{col_letter(n_c+1)}{n_g+3}  →  Data  →  What-If Analysis  →  Data Table"
           f"   |   Row input: '{CP}'!$B${EFF_GROWTH_ROW}   |   Col input: '{CP}'!$B${EFF_COGS_ROW}")
 inst_cell.font = _font(color="FFFFFF", bold=True, size=9)
-inst_cell.fill = _fill("ED7D31")   # orange — hard to miss
+inst_cell.fill = _fill("ED7D31")
 inst_cell.alignment = Alignment(horizontal="left", vertical="center")
-sens.merge_cells(f"A2:{CL(n_c+1)}2")
+sens.merge_cells(f"A2:{col_letter(n_c+1)}2")
 set_row_height(sens, 2, 22)
 
-# Header row (row 3)
+# Corner cell = Year N Net Income
 corner = sens.cell(row=3, column=1, value=f"={pl_ref('Net Income', YEARS+1)}")
 apply_money(corner)
 corner.fill = _fill("F2F2F2")
 
+# COGS headers (row 3, columns 2..n_c+1)
 for j, cog in enumerate(cogs_rates, start=2):
     cell = sens.cell(row=3, column=j, value=cog)
     apply_percent(cell, is_input=True)
-    cell.fill = _fill(LIGHT_BLUE := "D6E4F0")
+    cell.fill = _fill("D6E4F0")
 
+# Growth headers (column 1, rows 4..n_g+3)
 for i, gr in enumerate(growth_rates, start=4):
     cell = sens.cell(row=i, column=1, value=gr)
     apply_percent(cell, is_input=True)
     cell.fill = _fill("D6E4F0")
 
-# Body — placeholder dashes (Data Table fills these)
+# Body placeholders (dashes)
 for i in range(n_g):
     for j in range(n_c):
         cell = sens.cell(row=4+i, column=2+j, value="—")
-        cell.font      = _font(color="AAAAAA", size=9, italic=True)
+        cell.font = _font(color="AAAAAA", size=9, italic=True)
         cell.alignment = Alignment(horizontal="center")
         cell.number_format = '#,##0_);(#,##0);"-"'
 
-# Heatmap conditional formatting (activates once Data Table runs)
-heat_range = f"B4:{CL(n_c+1)}{n_g+3}"
+# Heatmap conditional formatting
+heat_range = f"B4:{col_letter(n_c+1)}{n_g+3}"
 sens.conditional_formatting.add(heat_range, ColorScaleRule(
     start_type="min",      start_color="F8696B",
     mid_type="percentile", mid_value=50, mid_color="FFEB84",
@@ -760,9 +823,11 @@ sens.conditional_formatting.add(heat_range, ColorScaleRule(
 ))
 sens.freeze_panes = "B4"
 
-# ─────────────────────────────────────────────
-# 10. Insights
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 7. Insights sheet (KPIs)
+# ------------------------------------------------------------------------------
+
 ins = wb.create_sheet("Insights")
 apply_header(ins.cell(row=1, column=1, value="KEY PERFORMANCE INDICATORS"))
 ins.merge_cells("A1:C1")
@@ -776,21 +841,19 @@ final_ebitda = pl_ref("EBITDA",     YEARS+1)
 final_cash   = ref(BS, bs_rows["Cash"], YEARS+1)
 final_chg    = ref(CF, cf_rows["Net Change in Cash"], YEARS+1)
 
-# Sources & Uses: Cash YN = Cash Y1 + sum(NChg Y2..YN)
-# Cash rolls forward using CURRENT year NChg, so Y1's NChg is never included in the roll.
-# Correct check: Ending Cash = Opening Cash + sum of NChg from Year 2 onward
-cf_nchg_range = f"'Cash Flow'!${CL(3)}${cf_rows['Net Change in Cash']}:${CL(YEARS+1)}${cf_rows['Net Change in Cash']}"
+# Sources & Uses check: Ending Cash = Opening Cash + sum(NChg Y2..YN)
+cf_nchg_range = f"'Cash Flow'!${col_letter(3)}${cf_rows['Net Change in Cash']}:${col_letter(YEARS+1)}${cf_rows['Net Change in Cash']}"
 src_uses_val  = f"IFERROR({ref(BS,bs_rows['Cash'],YEARS+1)}-({INITIAL_CASH}+SUMPRODUCT(({cf_nchg_range})*1)),0)"
 
-# Break-even: first year where NI > 0
-ni_range = f"'P&L'!$B${pl_rows['Net Income']}:${CL(YEARS+1)}${pl_rows['Net Income']}"
+# Break‑even year (first year where NI > 0)
+ni_range = f"'P&L'!$B${pl_rows['Net Income']}:${col_letter(YEARS+1)}${pl_rows['Net Income']}"
 breakeven = f"IFERROR(MATCH(TRUE,INDEX({ni_range}>0,),0),\"Not in forecast\")"
 
 kpis = [
     ("Revenue CAGR  (Yr 1 → 5)",
      f"=IFERROR(({final_rev}/{yr1_rev})^(1/{YEARS-1})-1,0)",
      "percent",
-     f'=IF(\'Insights\'!B3>0.15,"🚀 Strong","=IF"&IF(\'Insights\'!B3>0.08,"✅ Solid","⚠ Below 8%"))'),
+     f'=IF(\'Insights\'!B3>0.15,"🚀 Strong",IF(\'Insights\'!B3>0.08,"✅ Solid","⚠ Below 8%"))'),
 
     ("EBITDA Margin",
      f"=IFERROR({final_ebitda}/{final_rev},0)",
@@ -850,19 +913,25 @@ kpis = [
 for i, (label, formula, fmt, comment) in enumerate(kpis, start=3):
     ins.cell(row=i, column=1, value=label); apply_label(ins.cell(row=i, column=1), bold=True)
     ins.cell(row=i, column=2, value=formula)
-    if fmt == "percent": apply_percent(ins.cell(row=i, column=2))
-    elif fmt == "money": apply_money(ins.cell(row=i, column=2))
-    else:                apply_formula(ins.cell(row=i, column=2))
+    if fmt == "percent":
+        apply_percent(ins.cell(row=i, column=2))
+    elif fmt == "money":
+        apply_money(ins.cell(row=i, column=2))
+    else:
+        apply_formula(ins.cell(row=i, column=2))
     if comment:
-        ins.cell(row=i, column=3, value=comment); apply_formula(ins.cell(row=i, column=3))
+        ins.cell(row=i, column=3, value=comment)
+        apply_formula(ins.cell(row=i, column=3))
 
 ins.column_dimensions["A"].width = 28
 ins.column_dimensions["B"].width = 22
 ins.column_dimensions["C"].width = 44
 
-# ─────────────────────────────────────────────
-# 11. Dashboard
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 8. Dashboard sheet (charts)
+# ------------------------------------------------------------------------------
+
 dash = wb.create_sheet("Dashboard")
 dash["A1"] = "MODEL DASHBOARD"
 dash["A1"].font = _font(bold=True, size=16, color=DARK_BLUE)
@@ -873,37 +942,46 @@ cats = Reference(pl, min_col=2, max_col=YEARS+1, min_row=1, max_row=1)
 
 def make_bar(title, data_ref, color, anchor):
     chart = BarChart()
-    chart.type = "col"; chart.grouping = "clustered"
-    chart.title = title; chart.style = 10
-    chart.y_axis.title = "USD"; chart.x_axis.title = "Year"
-    chart.width = 14; chart.height = 10
+    chart.type = "col"
+    chart.grouping = "clustered"
+    chart.title = title
+    chart.style = 10
+    chart.y_axis.title = "USD"
+    chart.x_axis.title = "Year"
+    chart.width = 14
+    chart.height = 10
     chart.add_data(data_ref)
     chart.series[0].graphicalProperties.solidFill = color
     chart.set_categories(cats)
     dash.add_chart(chart, anchor)
 
+# Revenue bar chart
 make_bar("Revenue  (USD)",
     Reference(pl, min_col=2, max_col=YEARS+1,
               min_row=pl_rows["Revenue"], max_row=pl_rows["Revenue"]),
     "2E75B6", "A3")
 
+# Net Income bar chart
 make_bar("Net Income  (USD)",
     Reference(pl, min_col=2, max_col=YEARS+1,
               min_row=pl_rows["Net Income"], max_row=pl_rows["Net Income"]),
     "70AD47", "H3")
 
-# EBITDA Margin line — helper data written to a hidden row
+# EBITDA Margin line chart – uses a hidden helper row
 MARGIN_ROW = 35
 for col in range(2, YEARS+2):
     dash.cell(row=MARGIN_ROW, column=col,
               value=f"=IFERROR({pl_ref('EBITDA',col)}/{pl_ref('Revenue',col)},0)")
     apply_percent(dash.cell(row=MARGIN_ROW, column=col))
-set_row_height(dash, MARGIN_ROW, 0.1)   # effectively hide the helper row
+set_row_height(dash, MARGIN_ROW, 0.1)   # hide row
 
 line = LineChart()
-line.title = "EBITDA Margin %"; line.style = 10
-line.y_axis.title = "Margin %"; line.y_axis.numFmt = "0%"
-line.width = 14; line.height = 10
+line.title = "EBITDA Margin %"
+line.style = 10
+line.y_axis.title = "Margin %"
+line.y_axis.numFmt = "0%"
+line.width = 14
+line.height = 10
 margin_data = Reference(dash, min_col=2, max_col=YEARS+1,
                         min_row=MARGIN_ROW, max_row=MARGIN_ROW)
 line.add_data(margin_data)
@@ -915,25 +993,29 @@ dash.add_chart(line, "A20")
 
 dash.sheet_view.showGridLines = False
 
-# ─────────────────────────────────────────────
-# 12. Model health — back-fill into Control Panel
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 9. Model health summary on Control Panel
+# ------------------------------------------------------------------------------
+
+HEALTH_ROW = EFF_COGS_ROW + 2
 cp.cell(row=HEALTH_ROW, column=1, value="Model Health")
 apply_label(cp.cell(row=HEALTH_ROW, column=1), bold=True)
 cp.cell(row=HEALTH_ROW, column=2,
         value=f"=IF(ABS(SUM('Balance Sheet'!{BC_RANGE}))<1,\"✅  HEALTHY\",\"❌  BALANCE ERROR\")")
 cp.cell(row=HEALTH_ROW, column=2).font = _font(bold=True, size=11)
 
-# ─────────────────────────────────────────────
-# 13. Start Here
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 10. Start Here sheet (user guide)
+# ------------------------------------------------------------------------------
+
 start = wb.create_sheet("Start Here")
 start["A1"] = "📘  FINANCIAL MODEL"
 start["A1"].font = _font(bold=True, size=20, color=DARK_BLUE)
 start.merge_cells("A1:D1")
 set_row_height(start, 1, 36)
 
-# Sub-title
 start["A2"] = "3-Statement model  ·  DCF Valuation  ·  Scenario Engine  ·  Sensitivity Analysis"
 start["A2"].font = _font(size=10, color="595959", italic=True)
 start.merge_cells("A2:D2")
@@ -973,14 +1055,14 @@ for r, (label, note) in enumerate(legend, start=15):
 
 start["A19"] = "Sensitivity note"
 start["A19"].font = _font(bold=True)
-start["C19"] = (f"After opening, go to Sensitivity sheet, select B3:{CL(n_c+1)}{n_g+3}, "
+start["C19"] = (f"After opening, go to Sensitivity sheet, select B3:{col_letter(n_c+1)}{n_g+3}, "
                 f"Data → What-If Analysis → Data Table. "
                 f"Row input = Control Panel B{EFF_GROWTH_ROW}, Col input = Control Panel B{EFF_COGS_ROW}.")
 start["C19"].font = _font(italic=True, color="595959")
 start.merge_cells("C19:D19")
 
 # Metadata
-for r, (k, v) in enumerate([("Version", "4.0"), ("Author", "Abdallah"), ("Date", "2026")], start=21):
+for r, (k, v) in enumerate([("Version", "1.0"), ("Tool", "Financial Model Generator")], start=21):
     start.cell(row=r, column=1, value=k).font  = _font(bold=True, size=9, color="595959")
     start.cell(row=r, column=3, value=v).font  = _font(size=9, color="595959")
 
@@ -989,9 +1071,11 @@ start.column_dimensions["B"].width = 4
 start.column_dimensions["C"].width = 56
 start.sheet_view.showGridLines = False
 
-# ─────────────────────────────────────────────
-# 14. Global sheet styling
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 11. Global styling and protection
+# ------------------------------------------------------------------------------
+
 data_sheets = [pl, bs_ws, cf_ws, val, sens, ins]
 for ws in data_sheets:
     ws.sheet_view.showGridLines = False
@@ -1000,14 +1084,13 @@ for ws in data_sheets:
     ws.protection.sheet = True
     set_row_height(ws, 1, 22)
 
-# Sensitivity has different freeze
 sens.freeze_panes = "B4"
 
 cp.sheet_view.showGridLines = False
 cp.freeze_panes = "A3"
 cp.protection.sheet = True
 
-# Unlock all inputs in Control Panel
+# Unlock input cells on Control Panel
 for r in range(CP_ASSUMP_START, CP_ASSUMP_START + len(assumption_order)):
     cp.cell(row=r, column=2).protection = Protection(locked=False)
 for r in range(SCEN_DATA_START, SCEN_DATA_START + len(SCENARIOS)):
@@ -1015,26 +1098,20 @@ for r in range(SCEN_DATA_START, SCEN_DATA_START + len(SCENARIOS)):
         cp.cell(row=r, column=c).protection = Protection(locked=False)
 cp.cell(row=SEL_ROW, column=2).protection = Protection(locked=False)
 
-# ─────────────────────────────────────────────
-# 15. Sheet order & cleanup
-# ─────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# 12. Sheet order and save
+# ------------------------------------------------------------------------------
+
 order = ["Start Here", "Control Panel", "P&L", "Balance Sheet",
          "Cash Flow", "Valuation", "Sensitivity", "Insights", "Dashboard"]
 wb._sheets = [wb[t] for t in order if t in wb.sheetnames]
 if "Sheet" in wb.sheetnames:
     del wb["Sheet"]
 
-# ─────────────────────────────────────────────
-# 16. Save
-# ─────────────────────────────────────────────
-out_dir  = Path(__file__).parent / "output"
+out_dir = Path(__file__).parent / "output"
 out_dir.mkdir(exist_ok=True)
-out_path = out_dir / f"Financial_Model.xlsx"
+out_path = out_dir / "Financial_Model.xlsx"
 wb.save(out_path)
 
-print(f"✅  Saved → {out_path}")
-print(f"    Balance sheet will be GREEN on open.")
-print(f"    Sensitivity → select B3:{CL(n_c+1)}{n_g+3}")
-print(f"    → Data → What-If Analysis → Data Table")
-print(f"    → Row input:  '{CP}'!$B${EFF_GROWTH_ROW}")
-print(f"    → Col input:  '{CP}'!$B${EFF_COGS_ROW}")
+print(f"Model generated successfully: {out_path}")
